@@ -1,0 +1,32 @@
+# AI Development
+.gemini/
+.agent/
+AGENTS.md
+docs/
+external_repos/
+SECRETS.md
+
+# Log and temp files
+*.log
+error.txt
+logs.txt
+
+# Inspection / training scripts
+inspect_model.py
+model_inspection_result.txt
+*.pt
+result/
+backup_original/
+(A Document Being Saved By Xcode)/
+
+# Xcode / macOS
+.DS_Store
+xcuserdata/
+DerivedData/
+*.xcworkspace/
+
+# Android files
+Android/
+
+# Duplicate ML model in root
+/yolo_kendama_best.mlpackage/

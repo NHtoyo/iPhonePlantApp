@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- ローカルネットワーク(http://)への送信を許可。研究用途のローカル転送のため。 -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
