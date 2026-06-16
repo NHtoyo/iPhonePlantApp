@@ -48,7 +48,7 @@ struct SideMenuView: View {
                 }
                 
                 Spacer()
-                Text("Version 3.4.1").font(.caption).foregroundColor(.gray).padding()
+                Text("Version 3.4.3").font(.caption).foregroundColor(.gray).padding()
             }
             .frame(width: 280)
             .background(Color(white: 0.12))

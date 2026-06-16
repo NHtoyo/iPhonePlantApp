@@ -134,6 +134,12 @@ class DataRecorder {
             transforms["h"] = firstFrame["h"]
         }
         
+        // 深度モードの場合、Nerfstudio用にスケール係数を追記
+        // 深度PNGはmm単位で保存しているため、0.001でm変換する
+        if expectsDepth {
+            transforms["depth_unit_scale_factor"] = 0.001
+        }
+        
         let jsonURL = sessionDir.appendingPathComponent("transforms.json")
         do {
             let data = try JSONSerialization.data(withJSONObject: transforms, options: .prettyPrinted)
@@ -311,16 +317,26 @@ class DataRecorder {
         
         // ── Step 2: 診断ログ ──
         let nonZero = uint16Array.filter { $0 > 0 }.count
-        let sample = uint16Array.prefix(5).map { $0 }
-        print("[DEPTH] 非ゼロピクセル数: \(nonZero)/\(width*height), 先頭5値(mm): \(sample)")
+        let sampleRaw = uint16Array.prefix(5).map { $0 }
+        print("[DEPTH] 非ゼロピクセル数: \(nonZero)/\(width*height), 先頭5値(mm): \(sampleRaw)")
         
-        // ── Step 3: CGContext経由でPNG保存（動作実証済み方式） ──
+        // ── Step 3: CGContext経由でPNG保存 ──
+        // 【修正】PNG仕様はBig Endian。SwiftのUInt16はARM Little Endianなので、
+        //         保存前に明示的にBig Endian変換しないとバイト順が逆転し縞々になる。
+        //         例: 1500mm = 0x05DC → LE: [DC,05] → CGContextがBEで読む → 0xDC05 = 56325mm(異常)
+        let uint16ArrayBE = uint16Array.map { $0.bigEndian }
+        let sampleBE = uint16ArrayBE.prefix(5).map { $0.bigEndian }  // 確認用：元のmm値
+        print("[DEPTH] BigEndian変換後サンプル(mm): \(sampleBE)")
+        
         let colorSpace = CGColorSpaceCreateDeviceGray()
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+        // byteOrder16Big: CGContextにBig Endianバイト列であることを明示
+        let bitmapInfo = CGBitmapInfo(rawValue:
+            CGImageAlphaInfo.none.rawValue | CGBitmapInfo.byteOrder16Big.rawValue
+        )
         
-        uint16Array.withUnsafeMutableBytes { ptr in
+        uint16ArrayBE.withUnsafeBytes { ptr in
             guard let context = CGContext(
-                data: ptr.baseAddress,
+                data: UnsafeMutableRawPointer(mutating: ptr.baseAddress!),
                 width: width,
                 height: height,
                 bitsPerComponent: 16,
