@@ -106,26 +106,14 @@ iPhonePlantApp/
 
 ## データアップロードサーバー仕様と起動方法
 
-iPhoneアプリから送信されるデータを受け取るPC側のFlaskサーバーの仕様です。
+iPhoneアプリから送信されるデータ（tarアーカイブ）を受け取るPC側のFlaskサーバーの概要です。詳細な内部処理やAPIの仕様については、[upload_server_spec.md](file:///100.110.66.37/share/共有ファイル置き場/iPhonePlantApp/docs/upload_server_spec.md) を参照してください。
 
-### 1. プログラム・バッチファイルの所在
-* **サーバー起動用バッチファイル**: `C:\Users\islab\Desktop\run_server.bat`
-  * デスクトップ上にあり、ダブルクリックで簡単にサーバーを起動できます。
-* **アップロードサーバー本体**: `C:\Users\islab\Desktop\upload_server.py`
-  * 受信データのデフォルト保存先はスクリプト内の `SAVE_DIR = r"D:\tomato_collection\トマト動画"` に指定されています。
-
-### 2. 通信プロトコル仕様
-サーバーはポート `5000` で稼働し、アプリの `UploadManager.swift` から以下のAPIが呼び出されます。
-
-* **データアップロード (`/upload`)**
-  * **エンドポイント**: `POST http://<サーバーIP>:5000/upload`
-  * **Content-Type**: `multipart/form-data`
-  * **処理内容**: 送信されたセッションデータ（tarアーカイブ）を受信し、`SAVE_DIR` 配下に自動展開します。
-* **フォルダ名変更の同期 (`/rename`)**
-  * **エンドポイント**: `POST http://<サーバーIP>:5000/rename`
-  * **Content-Type**: `application/json`
-  * **データ形式**: `{"old_name": "旧フォルダ名", "new_name": "新フォルダ名"}`
-  * **処理内容**: アプリ内でフォルダ名が変更された際、サーバー側のフォルダ名も同期してリネームします。
+* **サーバー起動用バッチ**: `C:\Users\islab\Desktop\run_server.bat` (ダブルクリックで起動)
+* **サーバー本体**: `C:\Users\islab\Desktop\upload_server.py`
+* **受信データの保存先**: `D:\tomato_collection\トマト動画`
+* **APIエンドポイント**:
+  * `POST /upload` : iPhoneでアーカイブされたtarデータを受信し、自動的に展開・保存します。
+  * `POST /rename` : iPhone側でのセッション名変更（フォルダ名変更）をPC側へ同期します。
 
 ---
 
