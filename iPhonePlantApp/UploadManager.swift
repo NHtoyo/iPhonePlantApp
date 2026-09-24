@@ -64,11 +64,29 @@ class UploadManager: ObservableObject {
     private let uploadQueue = DispatchQueue(label: "com.plantapp.uploadqueue", qos: .utility)
 
     /// タイムアウト（秒）
-    private let uploadTimeoutSeconds: TimeInterval = 60
+    private let uploadTimeoutSeconds: TimeInterval = 900
 
     /// キャンセル用タスク参照
     private var currentTask: URLSessionDataTask?
     private var timeoutWorkItem: DispatchWorkItem?
+
+    private func diagnostic(_ stage: String, _ detail: String) -> String {
+        "[\(stage)] \(detail)"
+    }
+
+    private func safeServerMessage(from data: Data?) -> String? {
+        guard let data, !data.isEmpty else { return nil }
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in ["detail", "message", "error"] {
+                if let value = object[key] as? String, !value.isEmpty {
+                    return String(value.prefix(300))
+                }
+            }
+        }
+        guard let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return String(text.prefix(300))
+    }
 
     private init() { 
         self.autoUploadEnabled = UserDefaults.standard.object(forKey: "auto_upload_enabled") as? Bool ?? true
@@ -147,7 +165,7 @@ class UploadManager: ObservableObject {
             for i in 0..<loadedSessions.count {
                 if loadedSessions[i].status == .uploading {
                     loadedSessions[i].status = .failed
-                    loadedSessions[i].errorMessage = "中断されました"
+                    loadedSessions[i].errorMessage = "[中断] アップロード中にアプリが終了または再起動されました"
                 }
             }
             self.sessions = loadedSessions 
@@ -251,6 +269,7 @@ class UploadManager: ObservableObject {
     }
 
     private func syncRenameToServer(oldName: String, newName: String, serverIP: String) {
+        guard currentDestination == .localIP else { return }
         guard !serverIP.isEmpty, let url = URL(string: "http://\(serverIP):5000/rename") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -344,6 +363,21 @@ class UploadManager: ObservableObject {
 
     // MARK: - アップロード
 
+    private var currentDestination: UploadDestination {
+        UploadDestination(rawValue: UserDefaults.standard.string(forKey: "upload_destination") ?? "") ?? .localIP
+    }
+
+    private func uploadURL(serverIP: String) -> URL? {
+        if currentDestination == .localIP {
+            return URL(string: "http://\(serverIP):5000/upload")
+        }
+        let configured = UserDefaults.standard.string(forKey: "ngrok_base_url") ?? ""
+        let trimmed = configured.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let base = URL(string: trimmed), base.scheme?.lowercased() == "https" else { return nil }
+        return base.appendingPathComponent("upload")
+    }
+
     func upload(sessionId: String, serverIP: String, completion: @escaping (Bool, String) -> Void) {
         guard let record = sessions.first(where: { $0.id == sessionId }) else {
             completion(false, "Session not found")
@@ -351,8 +385,9 @@ class UploadManager: ObservableObject {
         }
         let sessionURL = record.localURL
         guard FileManager.default.fileExists(atPath: sessionURL.path) else {
-            updateStatus(id: sessionId, status: .failed, errorMessage: "Data not found")
-            completion(false, "データなし")
+            let message = diagnostic("ローカルデータ", "撮影セッションのフォルダがiPhone内に見つかりません: \(sessionId)")
+            updateStatus(id: sessionId, status: .failed, errorMessage: message)
+            completion(false, message)
             return
         }
         updateStatus(id: sessionId, status: .uploading)
@@ -361,8 +396,9 @@ class UploadManager: ObservableObject {
             guard let self = self else { return }
             self.currentTask?.cancel()
             self.currentTask = nil
-            self.updateStatus(id: sessionId, status: .failed, errorMessage: "Timeout")
-            DispatchQueue.main.async { completion(false, "タイムアウト") }
+            let message = self.diagnostic("送信", "15分以内に完了せずタイムアウトしました。通信速度とサーバー稼働状態を確認してください")
+            self.updateStatus(id: sessionId, status: .failed, errorMessage: message)
+            DispatchQueue.main.async { completion(false, message) }
         }
         self.timeoutWorkItem = timeout
         DispatchQueue.global().asyncAfter(deadline: .now() + self.uploadTimeoutSeconds, execute: timeout)
@@ -371,26 +407,51 @@ class UploadManager: ObservableObject {
             guard let self = self else { return }
             let archiveURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(sessionId).tar")
             let multipartURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(sessionId)_multipart.tmp")
+            var preparationStage = "TAR作成"
             
             do {
                 try self.createTAR(sessionURL: sessionURL, archiveURL: archiveURL)
-                guard let url = URL(string: "http://\(serverIP):5000/upload") else {
+                guard let url = self.uploadURL(serverIP: serverIP) else {
                     self.timeoutWorkItem?.cancel()
-                    self.updateStatus(id: sessionId, status: .failed, errorMessage: "Invalid URL")
-                    DispatchQueue.main.async { completion(false, "URL不正") }
+                    let message = self.diagnostic("設定", "送信先URLが不正です。ngrokは https:// から始まるベースURLを入力してください")
+                    self.updateStatus(id: sessionId, status: .failed, errorMessage: message)
+                    DispatchQueue.main.async { completion(false, message) }
                     return
                 }
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
+                request.timeoutInterval = self.uploadTimeoutSeconds
+                if self.currentDestination == .ngrok {
+                    let apiKey = UploadSecretStore.loadAPIKey()
+                    guard !apiKey.isEmpty else {
+                        self.timeoutWorkItem?.cancel()
+                        let message = self.diagnostic("設定", "ngrok用の共有APIキーが未設定です")
+                        self.updateStatus(id: sessionId, status: .failed, errorMessage: message)
+                        DispatchQueue.main.async { completion(false, message) }
+                        return
+                    }
+                    request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+                }
                 let boundary = "Boundary-\(UUID().uuidString)"
                 request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
                 
                 // --- ストリーミング用に一時ファイルにマルチパートボディを構築 ---
+                preparationStage = "multipart作成"
                 try? FileManager.default.removeItem(at: multipartURL)
                 guard let outStream = OutputStream(url: multipartURL, append: false) else { throw NSError(domain: "", code: 2, userInfo: nil) }
                 outStream.open()
                 
-                let headerStr = "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(archiveURL.lastPathComponent)\"\r\nContent-Type: application/x-tar\r\n\r\n"
+                var headerStr = ""
+                if self.currentDestination == .ngrok {
+                    let levels = UploadFolderSettings.load().map {
+                        $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }.filter { !$0.isEmpty }
+                    let fields = zip(["folder", "subfolder"], levels)
+                    for (name, value) in fields where !value.isEmpty {
+                        headerStr += "--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n"
+                    }
+                }
+                headerStr += "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(archiveURL.lastPathComponent)\"\r\nContent-Type: application/x-tar\r\n\r\n"
                 if let headerData = headerStr.data(using: .utf8) {
                     headerData.withUnsafeBytes { ptr in
                         outStream.write(ptr.baseAddress!.assumingMemoryBound(to: UInt8.self), maxLength: headerData.count)
@@ -428,22 +489,30 @@ class UploadManager: ObservableObject {
                     
                     if let error = error {
                         let nsError = error as NSError
-                        var readableMsg = "通信エラー"
+                        var readableMsg = self.diagnostic("通信", "\(error.localizedDescription) (code: \(nsError.code))")
                         if nsError.domain == NSURLErrorDomain {
                             switch nsError.code {
                             case NSURLErrorNotConnectedToInternet:
-                                readableMsg = "ネット未接続"
-                            case NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
-                                readableMsg = "サーバー接続不可(IP/FW確認)"
+                                readableMsg = self.diagnostic("ネットワーク", "インターネットに接続されていません (\(nsError.code))")
+                            case NSURLErrorCannotFindHost:
+                                readableMsg = self.diagnostic("DNS", "送信先ホストを見つけられません。ngrok URLの綴りを確認してください (\(nsError.code))")
+                            case NSURLErrorCannotConnectToHost:
+                                readableMsg = self.diagnostic("接続", "送信先へ接続できません。サーバー/ngrok Tunnel/ポートを確認してください (\(nsError.code))")
                             case NSURLErrorTimedOut:
-                                readableMsg = "タイムアウト"
+                                readableMsg = self.diagnostic("送信", "通信がタイムアウトしました (\(nsError.code))")
                             case NSURLErrorNetworkConnectionLost:
-                                readableMsg = "通信切断"
+                                readableMsg = self.diagnostic("送信", "アップロード途中で通信が切断されました (\(nsError.code))")
+                            case NSURLErrorSecureConnectionFailed,
+                                 NSURLErrorServerCertificateUntrusted,
+                                 NSURLErrorServerCertificateHasBadDate,
+                                 NSURLErrorServerCertificateHasUnknownRoot,
+                                 NSURLErrorClientCertificateRejected:
+                                readableMsg = self.diagnostic("TLS", "HTTPS証明書の検証に失敗しました。端末時刻とngrok URLを確認してください (\(nsError.code))")
+                            case NSURLErrorCancelled:
+                                readableMsg = self.diagnostic("中断", "アップロードがキャンセルされました (\(nsError.code))")
                             default:
-                                readableMsg = "通信エラー(\(nsError.code))"
+                                readableMsg = self.diagnostic("通信", "\(error.localizedDescription) (URLSession \(nsError.code))")
                             }
-                        } else {
-                            readableMsg = error.localizedDescription
                         }
                         self.updateStatus(id: sessionId, status: .failed, errorMessage: readableMsg)
                         DispatchQueue.main.async { completion(false, readableMsg) }
@@ -454,9 +523,17 @@ class UploadManager: ObservableObject {
                         DispatchQueue.main.async { completion(true, "✅ 成功") }
                     } else {
                         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                        var msg = "サーバーエラー (\(code))"
-                        if code == 413 { msg = "データサイズ超過 (413)" }
-                        else if code == 500 { msg = "サーバー内部エラー (500)" }
+                        var msg = self.diagnostic("HTTP", "想定外の応答です (status: \(code))")
+                        if code == 0 { msg = self.diagnostic("HTTP", "サーバーからHTTP応答を受信できませんでした") }
+                        else if code == 401 { msg = self.diagnostic("認証", "APIキーが未設定、期限切れ、または一致しません (HTTP 401)") }
+                        else if code == 413 { msg = self.diagnostic("サイズ", "ファイルがサーバー上限の512MBを超えています (HTTP 413)") }
+                        else if code == 422 { msg = self.diagnostic("リクエスト", "file/folder/subfolderの形式が受理されませんでした (HTTP 422)") }
+                        else if code == 404 { msg = self.diagnostic("URL", "アップロードAPIが見つかりません。ベースURLに /upload を含めていないか確認してください (HTTP 404)") }
+                        else if code == 429 { msg = self.diagnostic("制限", "サーバーのリクエスト制限に達しました (HTTP 429)") }
+                        else if code >= 500 { msg = self.diagnostic("サーバー", "ngrokまたは受信サーバー側で障害が発生しました (HTTP \(code))") }
+                        if let serverDetail = self.safeServerMessage(from: data) {
+                            msg += " / 応答: \(serverDetail)"
+                        }
                         
                         self.updateStatus(id: sessionId, status: .failed, errorMessage: msg)
                         DispatchQueue.main.async { completion(false, msg) }
@@ -466,8 +543,9 @@ class UploadManager: ObservableObject {
                 task.resume()
             } catch {
                 self.timeoutWorkItem?.cancel()
-                self.updateStatus(id: sessionId, status: .failed, errorMessage: error.localizedDescription)
-                DispatchQueue.main.async { completion(false, "作成失敗") }
+                let message = self.diagnostic(preparationStage, "一時ファイルを作成できません: \(error.localizedDescription)")
+                self.updateStatus(id: sessionId, status: .failed, errorMessage: message)
+                DispatchQueue.main.async { completion(false, message) }
                 try? FileManager.default.removeItem(at: archiveURL)
                 try? FileManager.default.removeItem(at: multipartURL)
             }
@@ -487,7 +565,8 @@ class UploadManager: ObservableObject {
         
         func uploadNext(_ index: Int) {
             guard index < total else {
-                let statusMsg = (completed == total) ? "完了" : "\(total-completed)件失敗"
+                let lastError = self.sessions.last(where: { $0.status == .failed })?.errorMessage
+                let statusMsg = (completed == total) ? "完了" : "\(total-completed)件失敗: \(lastError ?? "詳細不明")"
                 DispatchQueue.main.async { progressCallback(completed, total, statusMsg) }
                 return
             }
@@ -503,7 +582,7 @@ class UploadManager: ObservableObject {
                 } else {
                     print("DEBUG [UploadManager]: Upload FAILED: \(session.id) - \(errorMsg ?? "Unknown error")")
                     // 1件失敗しても次へ進むが、進捗としてエラーを通知
-                    DispatchQueue.main.async { progressCallback(completed, total, "❌ エラー: \(session.id)") }
+                    DispatchQueue.main.async { progressCallback(completed, total, "❌ \(session.id): \(errorMsg)") }
                 }
                 uploadNext(index + 1)
             }

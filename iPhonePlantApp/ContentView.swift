@@ -613,8 +613,8 @@ struct ContentView: View {
         guard showQualityReport else { return }
         withAnimation { showQualityReport = false }
         if uploadManager.autoUploadEnabled {
-            if serverIP.isEmpty {
-                uploadMessage = "⚠️ IP未設定"
+            if !uploadConfigurationIsReady(serverIP: serverIP) {
+                uploadMessage = "⚠️ 送信先設定を確認"
                 clearMessageAfterDelay()
             } else {
                 startUpload()
@@ -724,6 +724,13 @@ struct HistoryItemView: View {
                     statusIcon
                     Text(statusText).font(.caption2).foregroundColor(statusColor)
                 }
+                if session.status == .failed, let detail = session.errorMessage, !detail.isEmpty {
+                    Text(detail)
+                        .font(.system(size: 10))
+                        .foregroundColor(.red.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
             Spacer()
             
@@ -796,7 +803,7 @@ struct RetryUploadButton: View {
             uploadMessage = uploadManager.autoUploadEnabled ? "🔄 自動送信モード" : "✋ 手動送信モード"
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { if !isUploading { uploadMessage = "" } }
         })
-        .disabled(isUploading || serverIP.isEmpty)
+        .disabled(isUploading || !uploadConfigurationIsReady(serverIP: serverIP))
     }
     
     private func startManualUpload() {
@@ -991,4 +998,15 @@ func cropColor(for progress: Double, isAnyActive: Bool) -> Color {
 
 extension View {
     func hideKeyboard() { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+}
+
+func uploadConfigurationIsReady(serverIP: String) -> Bool {
+    let defaults = UserDefaults.standard
+    let destination = UploadDestination(rawValue: defaults.string(forKey: "upload_destination") ?? "") ?? .localIP
+    if destination == .localIP {
+        return !serverIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    let baseURL = defaults.string(forKey: "ngrok_base_url") ?? ""
+    return URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?.scheme?.lowercased() == "https"
+        && !UploadSecretStore.loadAPIKey().isEmpty
 }

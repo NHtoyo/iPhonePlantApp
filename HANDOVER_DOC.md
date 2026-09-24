@@ -1,6 +1,6 @@
 # HANDOVER_DOC.md — iPhonePlantApp プロジェクト引継ぎ書
 
-最終更新: 2026-06-16
+最終更新: 2026-08-27
 
 ---
 
@@ -57,6 +57,16 @@ iPhonePlantApp/
 ---
 
 ## バージョン・バグ修正履歴
+
+### v3.5.0 (2026-08-27): IP/ngrokアップロード切替
+- サーバー設定で従来の研究室内IP方式と、外部HTTPSのngrok方式を選択可能にした。
+- ngrokのベースURL、保存先の `folder` / `subfolder` をアプリ画面から設定可能にした。
+- 共通APIキーはソースやUserDefaultsへ保存せず、iOS Keychainへ保存する。
+- ngrok方式は `POST /upload`、`X-API-Key`、multipartの `file` / `folder` / `subfolder` に対応する。
+- 初期保存先は `upload/nakamura/トマト動画`。ngrok URLとAPIキーは運用時に入力する。
+- 大容量送信に合わせ、送信タイムアウトを15分に変更した。
+- 送信エラーを設定、TAR作成、multipart作成、DNS、接続、TLS、HTTP認証、サイズ、API形式、サーバー障害の段階別に表示し、サーバー応答の安全な範囲も履歴へ保存する。
+- ngrokの保存先入力欄を0～2個の範囲で追加・削除可能にし、入力欄数に応じて `folder` / `subfolder` の送信有無を変更する。
 
 ### v3.4.3 (2026-06-16): transforms.json自動追記とバージョン表記更新
 - **変更内容**:
